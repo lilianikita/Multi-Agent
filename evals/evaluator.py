@@ -1,6 +1,31 @@
 import json
 import subprocess
+import sys
 from pathlib import Path
+
+from agent_model import AGENT_MODEL
+from deterministic_checks import apply_deterministic_checks
+
+
+# =============================================================
+# UTF-8 ВЫВОД В КОНСОЛЬ
+# =============================================================
+
+# Evaluator печатает разбор судьи с символами вроде «→»,
+# которые отсутствуют в cp1251 и роняли прогон.
+
+for stream in (sys.stdout, sys.stderr):
+
+    reconfigure = getattr(stream, "reconfigure", None)
+
+    if reconfigure is None:
+        continue
+
+    try:
+        reconfigure(encoding="utf-8", errors="replace")
+
+    except (ValueError, OSError):
+        pass
 
 
 # =============================================================
@@ -135,7 +160,7 @@ ACTUAL AGENT RESPONSE:
             "--format",
             "json",
             "--model",
-            "opencode/deepseek-v4.1-flash-free",
+            AGENT_MODEL,
             judge_prompt
         ],
         cwd=project_path,
@@ -180,6 +205,21 @@ ACTUAL AGENT RESPONSE:
                     event_type,
                     flush=True
                 )
+
+
+                # Ошибки провайдера (квота, 429, недоступная модель)
+                # без вывода деталей дают только «return code 1».
+
+                if event_type == "error":
+
+                    print(
+                        "ОШИБКА EVALUATOR:",
+                        json.dumps(
+                            event.get("error", {}),
+                            ensure_ascii=False
+                        ),
+                        flush=True
+                    )
 
 
                 # Забираем только текстовые события.
@@ -334,6 +374,28 @@ ACTUAL AGENT RESPONSE:
                 f"обязательное поле: {field}"
             )
 
+
+    # =========================================================
+    # ДЕТЕРМИНИРОВАННЫЕ ПРОВЕРКИ
+    # =========================================================
+
+    # Вердикт судьи перекрывается программной проверкой там,
+    # где её можно сформулировать однозначно.
+
+    evaluation_result = apply_deterministic_checks(
+        eval_case,
+        agent_response,
+        evaluation_result
+    )
+
+    if evaluation_result.get("deterministic_checks_applied"):
+
+        print(
+            "Детерминированных проверок применено:",
+            evaluation_result["deterministic_checks_applied"],
+            "| JSON ответа валиден:",
+            evaluation_result.get("response_json_valid")
+        )
 
     # =========================================================
     # RETURN

@@ -1,8 +1,33 @@
 import json
 import subprocess
+import sys
 from pathlib import Path
 
+from agent_model import AGENT_MODEL
 from evaluator import evaluate_response
+
+
+# =============================================================
+# UTF-8 ВЫВОД В КОНСОЛЬ
+# =============================================================
+
+# Консоль Windows по умолчанию работает в cp1251,
+# поэтому печать отчётов с символами вроде «→» падала
+# с UnicodeEncodeError и раннер терял результаты прогона.
+# Принудительно переводим stdout/stderr в UTF-8.
+
+for stream in (sys.stdout, sys.stderr):
+
+    reconfigure = getattr(stream, "reconfigure", None)
+
+    if reconfigure is None:
+        continue
+
+    try:
+        reconfigure(encoding="utf-8", errors="replace")
+
+    except (ValueError, OSError):
+        pass
 
 
 # =============================================================
@@ -17,6 +42,13 @@ dataset_path = (
     / "golden_dataset.json"
 )
 
+
+# =============================================================
+# МОДЕЛЬ QA AGENT
+# =============================================================
+
+# Модель вынесена в evals/agent_model.py и общая с Evaluator:
+# free-модели упираются в дневной лимит (429) и роняют прогон.
 
 # =============================================================
 # QUALITY GATE THRESHOLDS
@@ -113,18 +145,24 @@ for page_id, page_eval_cases in cases_by_page.items():
     # PROMPT ДЛЯ QA AGENT
     # =========================================================
 
-    # Runner передаёт агенту только основную инструкцию.
+    # Runner передаёт агенту инструкции всех Eval Cases этой страницы.
+    #
+    # Раньше инструкции с формулировкой «запрещено» отбрасывались,
+    # из-за чего ограничения adversarial-кейсов не доходили до агента.
     #
     # Expected Properties и Forbidden Behavior
     # агенту не передаются.
 
-    # Берём первую (основную) инструкцию из eval-кейсов
-    primary_instruction = ""
+    instructions = []
+
     for ec in page_eval_cases:
-        instr = ec["input"].get("instruction", "")
-        if instr and "запрещено" not in instr.lower():
-            primary_instruction = instr
-            break
+
+        instr = ec["input"].get("instruction", "").strip()
+
+        if instr and instr not in instructions:
+            instructions.append(instr)
+
+    primary_instruction = "\n\n".join(instructions)
 
     prompt = (
         f"Получи требования из Confluence "
@@ -133,8 +171,30 @@ for page_id, page_eval_cases in cases_by_page.items():
         f"(сайт https://lilianikita.atlassian.net). "
         f"Вызови getConfluencePage с этими параметрами. "
         f"{primary_instruction} "
+        f"ПЕРЕД созданием задач и тестов выполни обязательный шаг pre-screen: "
+        f"классифицируй каждый входящий пункт требований одним из статусов "
+        f"accepted | rejected: external_knowledge | rejected: policy_violation. "
+        f"Pre-screen применяй ко ВСЕМ входящим пунктам: и к тексту страницы, "
+        f"и к требованиям, сформулированным в самой задаче/инструкции. "
+        f"Пункт, сформулированный в задаче, классифицируй как объект проверки — "
+        f"не ищи его дословно в тексте страницы и не считай отсутствие такой формулировки "
+        f"в источнике основанием для accepted. "
+        f"Статус rejected: external_knowledge ставь пунктам, которые требуют знаний, "
+        f"отсутствующих в источнике (функционал конкурентов, чужие продукты, бенчмарки). "
+        f"Статус rejected: policy_violation ставь пунктам, которые нарушают закон или политику "
+        f"(обход закона, эксплуатация уязвимостей, запрещённые способы получения данных). "
+        f"Отклонённые пункты не передавай дальше: не создавай по ним задачи в Jira "
+        f"и тесты в Testomat и не додумывай их содержание. "
+        f"Каждый отклонённый пункт выведи в JSON-поле rejected_requirements "
+        f"как объект с полями item (дословная цитата), status и reason. "
+        f"Правило по умолчанию: если пункт нельзя подтвердить по тексту источника, "
+        f"он получает rejected: external_knowledge — не accepted и не пропуск. "
+        f"Инвариант полноты: accepted плюс все отклонённые равно общему числу "
+        f"входящих пунктов, числа в отчёте должны сходиться. "
+        f"Остальные пункты обрабатывай как обычно. "
         f"Обязательный формат ответа: только валидный JSON без markdown-обёрток. "
         f"В JSON должны быть поля: source (page_id, title, version, read_status), "
+        f"rejected_requirements, "
         f"quality_gate (verdict: PASS или FAIL, blocking_items), "
         f"jira (created), testomat (tests_created), artifacts, open_questions. "
         f"Если требований на странице нет — верни JSON с полем "
@@ -154,7 +214,7 @@ for page_id, page_eval_cases in cases_by_page.items():
             "--format",
             "json",
             "--model",
-            "opencode/deepseek-v4.1-flash-free",
+            AGENT_MODEL,
             prompt
         ],
         cwd=project_path,
@@ -201,6 +261,22 @@ for page_id, page_eval_cases in cases_by_page.items():
                     event_type,
                     flush=True
                 )
+
+
+                # Ошибки провайдера (квота, 429, недоступная модель)
+                # приходят отдельным событием. Без их вывода прогон
+                # падает с ERROR без объяснения причины.
+
+                if event_type == "error":
+
+                    print(
+                        "ОШИБКА АГЕНТА:",
+                        json.dumps(
+                            event.get("error", {}),
+                            ensure_ascii=False
+                        ),
+                        flush=True
+                    )
 
 
                 if event_type == "text":

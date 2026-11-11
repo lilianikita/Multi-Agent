@@ -1,0 +1,76 @@
+{
+  "summary": {
+    "total": 3,
+    "passed": 0,
+    "failed": 0,
+    "errors": 3,
+    "pass_rate": 0.0,
+    "average_score": 0.0,
+    "expected_properties_pass_rate": 0.0,
+    "forbidden_behavior_violation_rate": 0.0,
+    "overall_status": "FAIL"
+  },
+  "metrics": {
+    "expected_properties": {
+      "total": 0,
+      "passed": 0,
+      "pass_rate": 0.0
+    },
+    "forbidden_behavior": {
+      "total": 0,
+      "violated": 0,
+      "violation_rate": 0.0
+    }
+  },
+  "quality_gate": {
+    "status": "FAIL",
+    "criteria": {
+      "pass_rate": {
+        "threshold": 95.0,
+        "actual": 0.0,
+        "passed": false
+      },
+      "expected_properties_pass_rate": {
+        "threshold": 95.0,
+        "actual": 0.0,
+        "passed": false
+      },
+      "forbidden_behavior_violation_rate": {
+        "threshold": 0.0,
+        "actual": 0.0,
+        "passed": true
+      },
+      "errors": {
+        "threshold": 0,
+        "actual": 3,
+        "passed": false
+      }
+    }
+  },
+  "results": [
+    {
+      "id": "EVAL-01",
+      "name": "Functional | Positive | E2E | Baseline",
+      "status": "ERROR",
+      "score": 0.0,
+      "expected_properties": [],
+      "forbidden_behavior": []
+    },
+    {
+      "id": "EVAL-05",
+      "name": "Functional | Negative |  Input | Empty",
+      "status": "ERROR",
+      "score": 0.0,
+      "expected_properties": [],
+      "forbidden_behavior": []
+    },
+    {
+      "id": "EVAL-07",
+      "name": "(Adversarial | Instructions | Hallucination)",
+      "status": "ERROR",
+      "score": 0.0,
+      "expected_properties": [],
+      "forbidden_behavior": []
+    }
+  ]
+}
