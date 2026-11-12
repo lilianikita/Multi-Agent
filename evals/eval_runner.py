@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -78,6 +79,58 @@ with open(
 ) as file:
 
     eval_cases = json.load(file)
+
+
+# =============================================================
+# ФИЛЬТР EVAL CASES ПО ID (переменная окружения EVAL_CASE_IDS)
+# =============================================================
+
+# Позволяет перезапустить только нужные кейсы, не создавая
+# повторно сущности по уже пройденным.
+#
+# Пример:
+#   EVAL_CASE_IDS=EVAL-01 python evals/eval_runner.py
+
+selected_case_ids = [
+    case_id.strip()
+    for case_id in os.environ.get("EVAL_CASE_IDS", "").split(",")
+    if case_id.strip()
+]
+
+
+if selected_case_ids:
+
+    known_ids = {eval_case["id"] for eval_case in eval_cases}
+
+    unknown_ids = [
+        case_id
+        for case_id in selected_case_ids
+        if case_id not in known_ids
+    ]
+
+    if unknown_ids:
+
+        raise RuntimeError(
+            "EVAL_CASE_IDS содержит неизвестные кейсы: "
+            + ", ".join(unknown_ids)
+        )
+
+
+    eval_cases = [
+        eval_case
+        for eval_case in eval_cases
+        if eval_case["id"] in selected_case_ids
+    ]
+
+
+    print()
+    print(
+        "Фильтр EVAL_CASE_IDS: "
+        + ", ".join(selected_case_ids)
+    )
+    print(
+        f"Выбрано Eval Cases: {len(eval_cases)}"
+    )
 
 
 eval_results = []
@@ -319,6 +372,16 @@ for page_id, page_eval_cases in cases_by_page.items():
     ).strip()
 
 
+    # Частичный ответ: агент упал с ненулевым кодом,
+    # но успел вернуть текст (и, возможно, создать сущности).
+    # Такой ответ оценивается, но помечается partial и
+    # не может дать PASS на Quality Gate.
+    is_partial = (
+        return_code != 0
+        and bool(agent_response)
+    )
+
+
     print()
 
     print(
@@ -351,21 +414,32 @@ for page_id, page_eval_cases in cases_by_page.items():
             print(stderr)
 
 
-        for eval_case in page_eval_cases:
+        if not agent_response:
 
-            eval_results.append(
-                {
-                    "id": eval_case["id"],
-                    "name": eval_case["name"],
-                    "status": "ERROR",
-                    "score": 0.0,
-                    "expected_properties": [],
-                    "forbidden_behavior": []
-                }
-            )
+            for eval_case in page_eval_cases:
+
+                eval_results.append(
+                    {
+                        "id": eval_case["id"],
+                        "name": eval_case["name"],
+                        "status": "ERROR",
+                        "score": 0.0,
+                        "expected_properties": [],
+                        "forbidden_behavior": [],
+                        "partial": False,
+                        "return_code": return_code
+                    }
+                )
 
 
-        continue
+            continue
+
+
+        print()
+        print(
+            "Ответ агента не пуст: сохраняем как PARTIAL "
+            "и передаём в Evaluator."
+        )
 
 
     # =========================================================
@@ -389,7 +463,9 @@ for page_id, page_eval_cases in cases_by_page.items():
                     "status": "ERROR",
                     "score": 0.0,
                     "expected_properties": [],
-                    "forbidden_behavior": []
+                    "forbidden_behavior": [],
+                    "partial": False,
+                    "return_code": return_code
                 }
             )
 
@@ -491,7 +567,10 @@ for page_id, page_eval_cases in cases_by_page.items():
                     "forbidden_behavior":
                         evaluation_result[
                             "forbidden_behavior"
-                        ]
+                        ],
+
+                    "partial": is_partial,
+                    "return_code": return_code
                 }
             )
 
@@ -528,7 +607,9 @@ for page_id, page_eval_cases in cases_by_page.items():
                     "status": "ERROR",
                     "score": 0.0,
                     "expected_properties": [],
-                    "forbidden_behavior": []
+                    "forbidden_behavior": [],
+                    "partial": is_partial,
+                    "return_code": return_code
                 }
             )
 
@@ -570,6 +651,13 @@ errors = sum(
     1
     for result in eval_results
     if result["status"] == "ERROR"
+)
+
+
+partial_results = sum(
+    1
+    for result in eval_results
+    if result.get("partial")
 )
 
 
@@ -774,6 +862,7 @@ for result in eval_results:
         f"{result['id']:<10}"
         f"{result['status']:<10}"
         f"Score: {result['score']}"
+        + (" [PARTIAL]" if result.get("partial") else "")
     )
 
 
@@ -828,6 +917,18 @@ errors_gate = (
 )
 
 
+# -------------------------------------------------------------
+# ПРОВЕРКА ЧАСТИЧНЫХ РЕЗУЛЬТАТОВ
+# -------------------------------------------------------------
+
+# Ответ сохранён, но агент завершился с ошибкой:
+# такой прогон нельзя признать успешным.
+
+partial_gate = (
+    partial_results == 0
+)
+
+
 # =============================================================
 # OVERALL QUALITY GATE
 # =============================================================
@@ -837,7 +938,8 @@ quality_gate_passed = all(
         pass_rate_gate,
         expected_properties_gate,
         forbidden_behavior_gate,
-        errors_gate
+        errors_gate,
+        partial_gate
     ]
 )
 
@@ -893,6 +995,13 @@ print(
 )
 
 
+print(
+    f"Partial Results == 0: "
+    f"{'PASS' if partial_gate else 'FAIL'} "
+    f"(actual: {partial_results})"
+)
+
+
 print()
 print(
     "QUALITY GATE STATUS:",
@@ -943,6 +1052,8 @@ report = {
         "failed": failed,
 
         "errors": errors,
+
+        "partial_results": partial_results,
 
         "pass_rate": round(
             pass_rate,
@@ -1054,6 +1165,12 @@ report = {
                 "threshold": MAX_ERRORS,
                 "actual": errors,
                 "passed": errors_gate
+            },
+
+            "partial_results": {
+                "threshold": 0,
+                "actual": partial_results,
+                "passed": partial_gate
             }
         }
     },
