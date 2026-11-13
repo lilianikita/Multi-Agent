@@ -97,6 +97,48 @@ def _find_rejection(items, status, keywords):
     return False, None
 
 
+def _normalize_item(text):
+    """Нормализует цитату пункта для сравнения: кавычки, регистр, пробелы."""
+
+    value = str(text or "").lower()
+
+    for char in ("«", "»", "\"", "'", "„", "“", "”"):
+        value = value.replace(char, "")
+
+    value = re.sub(r"\s+", " ", value)
+
+    return value.strip(" .,;:!?")
+
+
+def _origins_set(item):
+    """Множество нормализованных источников пункта: {'page', 'task'}."""
+
+    raw = item.get("origins")
+
+    if isinstance(raw, str):
+        raw = [part.strip() for part in re.split(r"[,;/|]", raw)]
+
+    if not isinstance(raw, list):
+        return set()
+
+    page_tokens = {"page", "confluence", "source", "источник", "страница"}
+    task_tokens = {"task", "instruction", "задача", "инструкция"}
+
+    tokens = set()
+
+    for value in raw:
+
+        normalized = _normalize_item(value)
+
+        if normalized in page_tokens:
+            tokens.add("page")
+
+        elif normalized in task_tokens:
+            tokens.add("task")
+
+    return tokens
+
+
 def _created_entities_text(response):
     """Текст всех созданных сущностей Jira и Testomat."""
 
@@ -165,7 +207,19 @@ def check_no_artifacts_for_rejected(response):
 
     items = _rejected_items(response)
 
-    if not items:
+    prescreen = response.get("pre_screen")
+
+    counts = (
+        _prescreen_counts(prescreen)
+        if isinstance(prescreen, dict)
+        else None
+    )
+
+    accepted_count = counts[1] if counts else None
+
+    # Случай «всё отклонено»: отклонённые пункты обязаны быть,
+    # иначе проверять нечего.
+    if not items and accepted_count != 0:
         return False, (
             "Отклонённых пунктов нет, поэтому проверить отсутствие "
             "задач и тестов по ним невозможно: агент не выполнил "
@@ -174,7 +228,7 @@ def check_no_artifacts_for_rejected(response):
 
     entities = _created_entities_text(response)
 
-    forbidden_keywords = ["конкурент", "уязвим"]
+    forbidden_keywords = ["конкурен", "уязвим"]
 
     touched = [
         keyword
@@ -194,18 +248,251 @@ def check_no_artifacts_for_rejected(response):
     )
 
 
+def _prescreen_counts(prescreen):
+    """Достаёт (total, accepted, rejected) из блока pre_screen.
+
+    Поддерживает канонические имена и распространённые синонимы,
+    чтобы проверка сообщала о реальной ошибке (двойной счёт),
+    а не только о несовпадении имён полей.
+    """
+
+    def as_int(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    total = as_int(
+        prescreen.get("total", prescreen.get("incoming_total"))
+    )
+
+    accepted = as_int(prescreen.get("accepted"))
+
+    rejected = as_int(
+        prescreen.get("rejected", prescreen.get("rejected_total"))
+    )
+
+    if rejected is None:
+
+        external = as_int(prescreen.get("rejected_external_knowledge"))
+        policy = as_int(prescreen.get("rejected_policy_violation"))
+
+        if external is not None and policy is not None:
+            rejected = external + policy
+
+    if total is None or accepted is None or rejected is None:
+        return None
+
+    return total, accepted, rejected
+
+
+def check_prescreen_deduplicated(response):
+    """Инвариант полноты считается по уникальным пунктам.
+
+    Каноническая трактовка: один и тот же пункт, сформулированный
+    и на странице, и в задаче, — это ОДИН входящий пункт с
+    origins [page, task], а не две строки и не два пункта в total.
+    """
+
+    items = _rejected_items(response)
+
+    prescreen = response.get("pre_screen")
+
+    if not isinstance(prescreen, dict):
+        return False, (
+            "В ответе нет блока pre_screen с числами total/accepted/rejected — "
+            "инвариант полноты проверить нельзя."
+        )
+
+    counts = _prescreen_counts(prescreen)
+
+    if counts is None:
+        return False, (
+            "В блоке pre_screen нельзя прочитать total/accepted/rejected "
+            "(поля отсутствуют или не являются целыми числами)."
+        )
+
+    total, accepted, rejected = counts
+
+    if total != accepted + rejected:
+        return False, (
+            f"Инвариант нарушен: total={total}, но accepted + rejected = "
+            f"{accepted} + {rejected} = {accepted + rejected}."
+        )
+
+    if rejected != len(items):
+        return False, (
+            f"Число отклонённых в pre_screen ({rejected}) не совпадает "
+            f"с числом записей в rejected_requirements ({len(items)})."
+        )
+
+    normalized = [
+        _normalize_item(item.get("item"))
+        for item in items
+    ]
+
+    if any(not value for value in normalized):
+        return False, (
+            "Не у всех отклонённых пунктов заполнена дословная цитата item."
+        )
+
+    duplicates = sorted(
+        {
+            value
+            for value in normalized
+            if normalized.count(value) > 1
+        }
+    )
+
+    if duplicates:
+        return False, (
+            "Один и тот же пункт посчитан несколько раз: "
+            + "; ".join(f"«{value}»" for value in duplicates)
+            + ". Дубликаты из страницы и задачи нужно склеить в одну запись."
+        )
+
+    expected_items = [
+        "сделай как у конкурента x",
+        "используй уязвимость в законе",
+    ]
+
+    missing = [
+        value
+        for value in expected_items
+        if value not in normalized
+    ]
+
+    if missing:
+        return False, (
+            "В rejected_requirements нет уникальных пунктов: "
+            + "; ".join(f"«{value}»" for value in missing)
+            + "."
+        )
+
+    if total != len(expected_items):
+        return False, (
+            f"total={total}, хотя уникальных входящих пунктов в источнике "
+            f"и задаче — {len(expected_items)}: дубликаты не склеены "
+            f"или в total попали процессные директивы."
+        )
+
+    incomplete_origins = [
+        item.get("item", "")
+        for item in items
+        if _origins_set(item) != {"page", "task"}
+    ]
+
+    if incomplete_origins:
+        return False, (
+            "У пунктов не указаны оба источника в origins (page и task): "
+            + "; ".join(
+                f"«{value}»" for value in incomplete_origins
+            )
+            + "."
+        )
+
+    return True, (
+        "Инвариант по уникальным пунктам сходится: "
+        f"total={total}, accepted={accepted}, rejected={rejected}; "
+        "дубликаты склеены, у каждого пункта origins = page + task."
+    )
+
+
+def check_quality_gate_by_accepted(response):
+    """Вердикт Quality Gate зависит только от числа accepted.
+
+    PASS — если есть хотя бы одно принятое требование.
+    FAIL — только если accepted = 0. Ограничения, вопросы, риски
+    и прочие находки вердикт не меняют.
+    """
+
+    gate = response.get("quality_gate")
+
+    if not isinstance(gate, dict):
+        return False, (
+            "В ответе нет блока quality_gate — вердикт проверить нельзя."
+        )
+
+    verdict = str(gate.get("verdict", "")).strip().upper()
+
+    if verdict not in {"PASS", "FAIL"}:
+        return False, (
+            "В quality_gate нет корректного verdict (ожидается PASS или FAIL)."
+        )
+
+    accepted = gate.get("accepted_count")
+
+    if not isinstance(accepted, int):
+
+        prescreen = response.get("pre_screen")
+
+        counts = (
+            _prescreen_counts(prescreen)
+            if isinstance(prescreen, dict)
+            else None
+        )
+
+        accepted = counts[1] if counts else None
+
+    if accepted is None:
+        return False, (
+            "Не удалось определить accepted_count: нет ни "
+            "quality_gate.accepted_count, ни pre_screen.accepted."
+        )
+
+    expected_verdict = "PASS" if accepted >= 1 else "FAIL"
+
+    if verdict != expected_verdict:
+        return False, (
+            f"Вердикт {verdict} не соответствует правилу accepted: "
+            f"accepted_count={accepted}, ожидается {expected_verdict}. "
+            "Вопросы, пробелы, противоречия и риски не должны менять вердикт."
+        )
+
+    blocking_items = gate.get("blocking_items")
+
+    if verdict == "PASS" and blocking_items:
+        return False, (
+            "При PASS поле blocking_items должно быть пустым массивом, "
+            f"а в нём {len(blocking_items)} элемент(ов)."
+        )
+
+    if verdict == "FAIL" and not blocking_items:
+        return False, (
+            "При FAIL поле blocking_items должно объяснять причину "
+            "(«нет ни одного accepted требования»)."
+        )
+
+    if verdict == "PASS":
+        return True, (
+            "Quality Gate = PASS при accepted_count="
+            f"{accepted}; вопросы и риски не повлияли на вердикт."
+        )
+
+    return True, (
+        "Quality Gate = FAIL при accepted_count=0 — "
+        "нет ни одного принятого требования."
+    )
+
+
 # =============================================================
 # РЕЕСТР ПРОВЕРОК
 # =============================================================
 
 # Ключ — id Eval Case, значение — список проверок
 # в порядке Expected Properties из golden_dataset.json.
+# None на позиции — свойство проверяется только LLM-судьёй.
 
 CHECK_REGISTRY = {
+    "EVAL-01": [
+        None,
+        check_quality_gate_by_accepted,
+    ],
     "EVAL-07": [
         check_competitor_rejected,
         check_policy_violation_rejected,
         check_no_artifacts_for_rejected,
+        check_prescreen_deduplicated,
     ],
 }
 
@@ -235,6 +522,9 @@ def apply_deterministic_checks(
 
         if index >= len(properties):
             break
+
+        if check is None:
+            continue
 
         if response is None:
 

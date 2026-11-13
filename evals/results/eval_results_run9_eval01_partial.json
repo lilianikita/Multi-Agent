@@ -1,0 +1,115 @@
+{
+  "summary": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "errors": 0,
+    "partial_results": 1,
+    "pass_rate": 100.0,
+    "average_score": 1.0,
+    "expected_properties_pass_rate": 100.0,
+    "forbidden_behavior_violation_rate": 0.0,
+    "overall_status": "FAIL"
+  },
+  "metrics": {
+    "expected_properties": {
+      "total": 5,
+      "passed": 5,
+      "pass_rate": 100.0
+    },
+    "forbidden_behavior": {
+      "total": 4,
+      "violated": 0,
+      "violation_rate": 0.0
+    }
+  },
+  "quality_gate": {
+    "status": "FAIL",
+    "criteria": {
+      "pass_rate": {
+        "threshold": 95.0,
+        "actual": 100.0,
+        "passed": true
+      },
+      "expected_properties_pass_rate": {
+        "threshold": 95.0,
+        "actual": 100.0,
+        "passed": true
+      },
+      "forbidden_behavior_violation_rate": {
+        "threshold": 0.0,
+        "actual": 0.0,
+        "passed": true
+      },
+      "errors": {
+        "threshold": 0,
+        "actual": 0,
+        "passed": true
+      },
+      "partial_results": {
+        "threshold": 0,
+        "actual": 1,
+        "passed": false
+      }
+    }
+  },
+  "results": [
+    {
+      "id": "EVAL-01",
+      "name": "Functional | Positive | E2E | Baseline",
+      "status": "PASS",
+      "score": 1.0,
+      "expected_properties": [
+        {
+          "property": "Агент получил актуальную версию страницы из Confluence",
+          "passed": true,
+          "reason": "Ответ содержит source с page_id=2129921, version=6, read_status=OK и URL страницы, что подтверждает получение актуальной версии страницы."
+        },
+        {
+          "property": "Корректно извлек и сегментировал требования из текста страницы и вернул обоснованный вердикт Quality Gate (PASS или FAIL)",
+          "passed": true,
+          "reason": "Требования сегментированы по разделам (6 разделов, functional/business rules/constraints/AC/dependencies), вердикт Quality Gate = FAIL с перечнем блокирующих пунктов и обоснованием."
+        },
+        {
+          "property": "Создал задачи в Jira, связанные с требованиями",
+          "passed": true,
+          "reason": "Создано 7 задач в проекте KAN (эпик KAN-227 и 6 задач KAN-228..KAN-233), каждая с привязкой к требованиям (REQ-01 и т.д.) и родителю, errors=0, верификация запросом parent = KAN-227."
+        },
+        {
+          "property": "Создал тест-кейсы в Testomat.io, связанных с задачами",
+          "passed": true,
+          "reason": "Создано 50 тестов в 6 сьютах, linked_to_jira=50, распределение по задачам KAN-228..KAN-233 указано, приведены test_ids."
+        },
+        {
+          "property": "Сформировал валидный JSON-отчет со ссылками на артефакты",
+          "passed": true,
+          "reason": "Итоговый отчёт представлен валидным JSON-объектом, включающим блок artifacts со ссылками на все артефакты с версиями."
+        }
+      ],
+      "forbidden_behavior": [
+        {
+          "rule": "Применять внешние бизнес-правила, не указанные в требованиях",
+          "violated": false,
+          "reason": "Агент явно отклонил 1 пункт как external_knowledge и указал, что внешние знания не привлекались; блокирующие замечания (например, 152-ФЗ) оформлены как комплаенс-риск и Open Questions, а не как внедрённое бизнес-правило."
+        },
+        {
+          "rule": "Пропускать или объединять требования",
+          "violated": false,
+          "reason": "Приведён инвариант 44 + 1 + 0 = 45, отклонённый пункт обоснован отдельно, задачи покрывают REQ-01..REQ-40, объединения требований не зафиксировано."
+        },
+        {
+          "rule": "Придумывать детали",
+          "violated": false,
+          "reason": "Отсутствующие сведения вынесены в open_questions и non_blocking_notes/GAP, а не додуманы; вердикт FAIL обоснован неполнотой требований."
+        },
+        {
+          "rule": "Сообщать об успехе до получения HTTP 201 от Jira/Testomat",
+          "violated": false,
+          "reason": "Успех подтверждён результатами: в Jira — verification запросом parent = KAN-227 и errors=0, в Testomat — 50 созданных тестов и верифицированные связи (All links verified) перед записью артефактов; преждевременного заявления об успехе нет."
+        }
+      ],
+      "partial": true,
+      "return_code": 1
+    }
+  ]
+}
